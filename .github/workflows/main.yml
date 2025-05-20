@@ -1,0 +1,74 @@
+from flask import Flask, request, redirect, url_for, render_template_string, flash
+import boto3
+import json
+from io import BytesIO
+from werkzeug.utils import secure_filename
+
+app = Flask(__name__)
+app.secret_key = 'your_flask_secret_key'  # Replace or use env variable securely
+
+# S3 configuration
+S3_BUCKET = 'your-bucket-name'
+S3_REGION = 'your-region'  # e.g., 'us-east-1'
+
+# Boto3 S3 client (uses IAM role credentials)
+s3_client = boto3.client('s3', region_name=S3_REGION)
+
+UPLOAD_FORM = '''
+<!doctype html>
+<title>Upload to S3</title>
+<h1>Upload File to Amazon S3</h1>
+<form method=post enctype=multipart/form-data>
+  <input type=file name=file multiple>
+  <input type=submit value=Upload>
+</form>
+{% with messages = get_flashed_messages() %}
+  {% if messages %}
+    <ul>{% for msg in messages %}
+      <li>{{ msg }}</li>
+    {% endfor %}</ul>
+  {% endif %}
+{% endwith %}
+'''
+
+@app.route('/', methods=['GET', 'POST'])
+def upload_to_s3():
+    if request.method == 'POST':
+        files = request.files.getlist('file')
+        for f in files:
+            if f.filename == '':
+                flash('No file selected')
+                continue
+
+            filename = secure_filename(f.filename)
+
+            try:
+                # Upload original file to S3
+                s3_client.upload_fileobj(f, S3_BUCKET, filename)
+                flash(f'Uploaded file: {filename}')
+
+                # Prepare metadata content
+                metadata_content = {
+                    "documented": filename,
+                    "Attributes": {
+                        "Sourceurl": filename
+                    }
+                }
+
+                # Convert metadata content to JSON bytes
+                metadata_filename = f"{filename}.metadata.json"
+                metadata_buffer = BytesIO(json.dumps(metadata_content).encode('utf-8'))
+
+                # Upload metadata file to S3
+                s3_client.upload_fileobj(metadata_buffer, S3_BUCKET, metadata_filename)
+                flash(f'Uploaded metadata: {metadata_filename}')
+
+            except Exception as e:
+                flash(f'Upload failed for {filename}: {str(e)}')
+
+        return redirect(url_for('upload_to_s3'))
+
+    return render_template_string(UPLOAD_FORM)
+
+if __name__ == '__main__':
+    app.run(debug=True, host='0.0.0.0')
