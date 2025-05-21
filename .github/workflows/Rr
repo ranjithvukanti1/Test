@@ -1,1 +1,91 @@
-python -c "import secrets; print(secrets.token_hex(32))"
+from flask import Flask, request, redirect, url_for, render_template_string, flash
+import boto3
+import json
+from io import BytesIO
+from werkzeug.utils import secure_filename
+
+app = Flask(__name__)
+app.secret_key = 'your_flask_secret_key'  # Replace or load securely
+
+# S3 Configuration
+S3_BUCKET = 'your-bucket-name'
+S3_REGION = 'your-region'
+
+# Boto3 client using IAM role
+s3_client = boto3.client('s3', region_name=S3_REGION)
+
+# HTML Template with folder dropdown
+UPLOAD_FORM = '''
+<!doctype html>
+<title>Upload to S3</title>
+<h1>Upload File to Amazon S3</h1>
+
+<form method=post enctype=multipart/form-data>
+  <label for="folder">Select folder:</label>
+  <select name="folder" required>
+    {% for folder in folders %}
+      <option value="{{ folder }}">{{ folder }}</option>
+    {% endfor %}
+  </select><br><br>
+
+  <input type=file name=file multiple required>
+  <input type=submit value=Upload>
+</form>
+
+{% with messages = get_flashed_messages() %}
+  {% if messages %}
+    <ul>{% for msg in messages %}
+      <li>{{ msg }}</li>
+    {% endfor %}</ul>
+  {% endif %}
+{% endwith %}
+'''
+
+def list_s3_folders(bucket):
+    """List top-level 'folders' (prefixes) in the S3 bucket."""
+    response = s3_client.list_objects_v2(Bucket=bucket, Delimiter='/')
+    prefixes = [content.get('Prefix').rstrip('/') for content in response.get('CommonPrefixes', [])]
+    return prefixes
+
+@app.route('/', methods=['GET', 'POST'])
+def upload_to_s3():
+    if request.method == 'POST':
+        folder = request.form.get('folder')
+        files = request.files.getlist('file')
+
+        for f in files:
+            if f.filename == '':
+                flash('No file selected')
+                continue
+
+            filename = secure_filename(f.filename)
+            s3_key = f"{folder}/{filename}"
+
+            try:
+                # Upload original file
+                s3_client.upload_fileobj(f, S3_BUCKET, s3_key)
+                flash(f'Uploaded file: {s3_key}')
+
+                # Create and upload metadata
+                metadata_content = {
+                    "documented": filename,
+                    "Attributes": {
+                        "Sourceurl": s3_key
+                    }
+                }
+                metadata_filename = f"{filename}.metadata.json"
+                metadata_buffer = BytesIO(json.dumps(metadata_content).encode('utf-8'))
+                s3_client.upload_fileobj(metadata_buffer, S3_BUCKET, f"{folder}/{metadata_filename}")
+                flash(f'Uploaded metadata: {folder}/{metadata_filename}')
+
+            except Exception as e:
+                flash(f'Upload failed for {filename}: {str(e)}')
+
+        return redirect(url_for('upload_to_s3'))
+
+    # GET: load available folders
+    folders = list_s3_folders(S3_BUCKET)
+    return render_template_string(UPLOAD_FORM, folders=folders)
+
+if __name__ == '__main__':
+    app.run(debug=True, host='0.0.0.0') -c "import secrets; print(secrets.token_hex(32))"
